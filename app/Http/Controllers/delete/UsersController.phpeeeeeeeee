@@ -1,0 +1,235 @@
+<?php
+
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use DB;
+use App\User;
+use App\Banned;
+use Carbon\Carbon;
+use Auth;
+
+class UsersController
+{
+    private $request;
+
+    public function __construct(Request $request)
+    {
+        $this->request = $request;
+    }
+
+    public function index()
+    {
+
+        isset($_GET['q']) ? $term = $_GET['q'] : $term = '';
+
+        if($term) {
+            $users = (new User)->get('users.name LIKE ?', '%' . $term . '%', 20, true);
+        } else {
+            $users = (new User)->get(null, null, 20, true);
+        }
+
+        $total_users = DB::table('users')->count();
+
+        return view('backend.users.index')
+            ->with('users', $users)
+            ->with('total_users', $total_users)
+            ->with('term', $term);
+    }
+
+    public function delete()
+    {
+        DB::table('users')
+            ->where('id', $this->request->route('id'))
+            ->delete();
+
+        DB::table('comments')
+            ->where('user_id', $this->request->route('id'))
+            ->delete();
+
+        return redirect()->route('backend.users')->with('status', 'success')->with('message', 'User successfully deleted!');
+    }
+
+    public function add()
+    {
+        return view('backend.users.add');
+    }
+
+    public function addPost()
+    {
+
+        $name = $this->request->input('name');
+        $username = $this->request->input('username');
+        $email = $this->request->input('email');
+        $password = $this->request->input('password');
+
+        $this->request->validate([
+            'name' => 'required|string',
+            'username' => 'required|string|alpha_dash|unique:users',
+            'email' => 'string|email|unique:users',
+
+        ]);
+
+        $artworkId = null;
+
+        if ($this->request->hasFile('file')) {
+            $uploader = artworkUploader($this->request, "users");
+            if ($uploader->success == true) {
+                $artworkId = $uploader->artworkId;
+            }
+        }
+
+        DB::table('users')
+            ->insert([
+                'name' => $name,
+                'username' => $username,
+                'password' => bcrypt($password),
+                'email' => $email,
+                'artworkId' => $artworkId,
+
+            ]);
+
+        return redirect()->route('backend.users')->with('status', 'success')->with('message', 'User successfully updated!');
+    }
+
+    public function profile()
+    {
+        $user = User::findOrFail($this->request->route('id'));
+
+        $role = DB::table('role_users')->select('role_id')->where('user_id', $user->id)->first();
+        isset($role->role_id) ? $user->role = $role->role_id : $user->role = 0;
+
+        if($user->banned) {
+            $ban = Banned::findOrFail($user->id);
+            $user->ban_reason = $ban->reason;
+            $user->ban_end_at = $ban->end_at;
+        }
+
+        $user->artwork = getUserArtwork($user->id);
+
+        return view('backend.users.profile')
+            ->with('user', $user);
+    }
+    public function edit()
+    {
+        $user = User::findOrFail($this->request->route('id'));
+
+        $role = DB::table('role_users')->select('role_id')->where('user_id', $user->id)->first();
+        isset($role->role_id) ? $user->role = $role->role_id : $user->role = 0;
+
+        if($user->banned) {
+            $ban = Banned::findOrFail($user->id);
+            $user->ban_reason = $ban->reason;
+            $user->ban_end_at = $ban->end_at;
+        }
+
+        $user->artwork = getUserArtwork($user->id);
+
+        return view('backend.users.edit')
+            ->with('user', $user);
+    }
+public function editProfile()
+    {
+        $user = User::find($this->request->route('id'));
+
+         
+        
+        
+        $user->stopwidthdrawal = $this->request->input('stopwidthdrawal');
+        
+        
+       
+
+        $user->save();
+
+        return redirect()->route('backend.users')->with('status', 'success')->with('message', 'User successfully updated!');
+
+    }
+    
+    
+    public function editPost()
+    {
+        $user = User::find($this->request->route('id'));
+
+        $this->request->validate([
+            'name' => 'required|string',
+        ]);
+
+        if($this->request->input('username') != $user->username)
+        {
+            $this->request->validate([
+                'username' => 'required|string|alpha_dash|unique:users',
+            ]);
+        }
+
+        if($this->request->input('email') != $user->email)
+        {
+            $this->request->validate([
+                'email' => 'string|email|unique:users',
+            ]);
+        }
+
+        $this->request->validate([
+            'banned' => 'required|boolean',
+        ]);
+
+
+
+        if ($this->request->input('removeArtwork')) {
+            removeArtwork($user->artworkId);
+        } else {
+            if ($this->request->hasFile('file')) {
+                $uploader = artworkUploader($this->request, "users");
+
+                if ($uploader->success == true) {
+                    $user->artworkId = $uploader->artworkId;
+                }
+            }
+        }
+
+        /** update user group */
+        (new User)->setRole($user->id, $this->request->input('role'));
+
+        if ($this->request->input('deleteComments')) {
+            DB::table('comments')
+                ->where('user_id', $user->id)
+                ->delete();
+        }
+        
+        
+        
+        $user->stopwidthdrawal = $this->request->input('stopwidthdrawal');
+        
+        
+        
+
+        $user->name = $this->request->input('name');
+        $user->username = $this->request->input('username');
+        $user->email = $this->request->input('email');
+        $user->banned = $this->request->input('banned');
+
+        if($this->request->input('banned')){
+            if(Auth::user()->id == $user->id) {
+                return redirect('admin/users/edit/' . $this->request->route('id'))->with('status', 'failed')->with('message', 'You can not banned yourself.');
+            }
+            Banned::updateOrCreate([
+                'user_id' => $user->id,
+            ], [
+                'reason' => $this->request->input('ban_reason'),
+                'end_at' => Carbon::parse(($this->request->input('ban_end_at')))->format('Y/m/d H:i'),
+            ]);
+        }
+
+        if($this->request->input('password'))
+        {
+            $user->password = bcrypt($this->request->input('password'));
+        }
+
+        $user->save();
+
+        return redirect()->route('backend.users')->with('status', 'success')->with('message', 'User successfully updated!');
+
+    }
+
+}
